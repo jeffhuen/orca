@@ -163,15 +163,16 @@ describe('renderer recovery reload watchdog', () => {
     consoleError.mockRestore()
   })
 
-  it('clears the watchdog when the recovery reload finishes loading', () => {
+  it('clears the watchdog when the recovery reload finishes loading', async () => {
     const onRecoveryReloadOutcome = vi.fn()
     const onRendererRecoveryExhausted = vi.fn()
-    const { browserWindowInstance, consoleError, crashRenderer, windowHandlers } = createHarness()
+    const { browserWindowInstance, consoleError, crashRenderer, settleLoad } = createHarness()
 
     createMainWindow(null, { onRecoveryReloadOutcome, onRendererRecoveryExhausted })
     crashRenderer()
     vi.advanceTimersByTime(2_000)
-    windowHandlers['did-finish-load']?.()
+    settleLoad[1]?.resolve()
+    await vi.advanceTimersByTimeAsync(0)
 
     expect(onRecoveryReloadOutcome).toHaveBeenCalledWith({
       status: 'loaded',
@@ -183,6 +184,122 @@ describe('renderer recovery reload watchdog', () => {
     expect(onRecoveryReloadOutcome).toHaveBeenCalledTimes(1)
     expect(browserWindowInstance.loadFile).toHaveBeenCalledTimes(2)
     expect(onRendererRecoveryExhausted).not.toHaveBeenCalled()
+
+    consoleError.mockRestore()
+  })
+
+  it('keeps watching the retry when a stale did-finish-load arrives after it was issued', () => {
+    const onRecoveryReloadOutcome = vi.fn()
+    const onRendererRecoveryExhausted = vi.fn()
+    const { browserWindowInstance, consoleError, crashRenderer, windowHandlers } = createHarness()
+
+    createMainWindow(null, { onRecoveryReloadOutcome, onRendererRecoveryExhausted })
+    crashRenderer()
+    vi.advanceTimersByTime(RENDERER_RECOVERY_LOAD_TIMEOUT_MS)
+    expect(browserWindowInstance.loadFile).toHaveBeenCalledTimes(3)
+
+    // did-finish-load carries no attempt token: this one belongs to the load the timer just abandoned. Crediting
+    // the retry with it disarms the watchdog over a load still in flight — the exact hole this watchdog closes.
+    windowHandlers['did-finish-load']?.()
+    expect(onRecoveryReloadOutcome).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'loaded' })
+    )
+
+    vi.advanceTimersByTime(RENDERER_RECOVERY_LOAD_TIMEOUT_MS)
+    expect(onRecoveryReloadOutcome).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: 'timeout', attempt: 2 })
+    )
+    expect(onRendererRecoveryExhausted).toHaveBeenCalledTimes(1)
+
+    consoleError.mockRestore()
+  })
+
+  it('does not take an error page as the retry landing', async () => {
+    const onRecoveryReloadOutcome = vi.fn()
+    const onRendererRecoveryExhausted = vi.fn()
+    const { consoleError, crashRenderer, settleLoad, windowHandlers } = createHarness()
+
+    createMainWindow(null, { onRecoveryReloadOutcome, onRendererRecoveryExhausted })
+    crashRenderer()
+    settleLoad[1]?.reject(new Error('ERR_FILE_NOT_FOUND (-6)'))
+    await vi.advanceTimersByTimeAsync(0)
+    // Chromium commits an error document for the failed load, and that document emits did-finish-load too.
+    windowHandlers['did-finish-load']?.()
+
+    expect(onRecoveryReloadOutcome).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'loaded' })
+    )
+    vi.advanceTimersByTime(RENDERER_RECOVERY_LOAD_TIMEOUT_MS)
+    expect(onRendererRecoveryExhausted).toHaveBeenCalledTimes(1)
+
+    consoleError.mockRestore()
+  })
+
+  it('raises one prompt, however many times recovery gives up underneath it', () => {
+    const onRecoveryReloadOutcome = vi.fn()
+    const onRendererRecoveryExhausted = vi.fn()
+    const { browserWindowInstance, consoleError, crashRenderer } = createHarness()
+
+    createMainWindow(null, { onRecoveryReloadOutcome, onRendererRecoveryExhausted })
+    crashRenderer()
+    vi.advanceTimersByTime(RENDERER_RECOVERY_LOAD_TIMEOUT_MS * 2)
+    expect(onRendererRecoveryExhausted).toHaveBeenCalledTimes(1)
+    expect(browserWindowInstance.loadFile).toHaveBeenCalledTimes(3)
+
+    // The renderer dies again while the box is up; the breaker never counted stalls, so it lets the reload go.
+    crashRenderer()
+    expect(browserWindowInstance.loadFile).toHaveBeenCalledTimes(4)
+    vi.advanceTimersByTime(RENDERER_RECOVERY_LOAD_TIMEOUT_MS * 2)
+
+    // Nothing dismisses a native message box: a retry the user never asked for, or a second box, stacks on it.
+    expect(browserWindowInstance.loadFile).toHaveBeenCalledTimes(4)
+    expect(onRendererRecoveryExhausted).toHaveBeenCalledTimes(1)
+    // The stall is still on the record, so the bundle does not read as a recovery that quietly worked.
+    expect(onRecoveryReloadOutcome).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: 'timeout', attempt: 1 })
+    )
+
+    // Answering the box with Reload hands the next verdict back to the user.
+    onRendererRecoveryExhausted.mock.calls[0]?.[0].retry()
+    vi.advanceTimersByTime(RENDERER_RECOVERY_LOAD_TIMEOUT_MS * 2)
+    expect(onRendererRecoveryExhausted).toHaveBeenCalledTimes(2)
+
+    consoleError.mockRestore()
+  })
+
+  it('still reloads from a crash-loop prompt raised after an earlier recovery had landed', async () => {
+    const onRendererRecoveryExhausted = vi.fn()
+    const { browserWindowInstance, consoleError, crashRenderer, settleLoad } = createHarness()
+
+    createMainWindow(null, { onRendererRecoveryExhausted })
+    // Every recovery reload lands, and every landed document then dies with its renderer.
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      crashRenderer()
+      settleLoad[attempt]?.resolve()
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    crashRenderer()
+    expect(onRendererRecoveryExhausted).toHaveBeenCalledTimes(1)
+    const loads = browserWindowInstance.loadFile.mock.calls.length
+
+    // The last document landed, but the renderer took it down: declining Reload here strands the user.
+
+    onRendererRecoveryExhausted.mock.calls[0]?.[0].retry()
+    expect(browserWindowInstance.loadFile).toHaveBeenCalledTimes(loads + 1)
+
+    consoleError.mockRestore()
+  })
+
+  it('does not stack a crash-loop prompt on one that is already up', () => {
+    const onRendererRecoveryExhausted = vi.fn()
+    const { consoleError, crashRenderer } = createHarness()
+
+    createMainWindow(null, { onRendererRecoveryExhausted })
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      crashRenderer()
+    }
+
+    expect(onRendererRecoveryExhausted).toHaveBeenCalledTimes(1)
 
     consoleError.mockRestore()
   })
@@ -247,10 +364,11 @@ describe('renderer recovery reload watchdog', () => {
     expect(onRecoveryReloadOutcome).not.toHaveBeenCalled()
     expect(onRendererRecoveryExhausted).not.toHaveBeenCalled()
 
-    // The replacement load lands, and the window the user sees was never worth a Reload/Quit prompt.
+    // The replacement load lands, and the window the user sees was never worth a Reload/Quit prompt. The crumb
+    // says so: elapsedMs measures the replacement, and the budget analysis has to be able to leave it out.
     windowHandlers['did-finish-load']?.()
     expect(onRecoveryReloadOutcome).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'loaded', attempt: 1 })
+      expect.objectContaining({ status: 'loaded', attempt: 1, superseded: true })
     )
     expect(onRendererRecoveryExhausted).not.toHaveBeenCalled()
 
@@ -478,10 +596,10 @@ describe('renderer recovery reload watchdog', () => {
     consoleError.mockRestore()
   })
 
-  it('records a reload that lands after the prompt, and leaves the recovered window alone', () => {
+  it('records a reload that lands after the prompt, and leaves the recovered window alone', async () => {
     const onRecoveryReloadOutcome = vi.fn()
     const onRendererRecoveryExhausted = vi.fn()
-    const { browserWindowInstance, consoleError, crashRenderer, windowHandlers } = createHarness()
+    const { browserWindowInstance, consoleError, crashRenderer, settleLoad } = createHarness()
 
     createMainWindow(null, { onRecoveryReloadOutcome, onRendererRecoveryExhausted })
     crashRenderer()
@@ -490,7 +608,8 @@ describe('renderer recovery reload watchdog', () => {
 
     onRecoveryReloadOutcome.mockClear()
     vi.advanceTimersByTime(30_000)
-    windowHandlers['did-finish-load']?.()
+    settleLoad[2]?.resolve()
+    await vi.advanceTimersByTimeAsync(0)
 
     // Nothing cancels a pending Chromium load, so escalation must keep watching: a bundle that reads
     // `exhausted` for a recovery that actually worked misleads the next triage round.

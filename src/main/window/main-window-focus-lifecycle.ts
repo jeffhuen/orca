@@ -14,7 +14,7 @@ import {
   matchingRichMarkdownContextMenuTableTarget,
   parseRichMarkdownContextMenuTableTarget
 } from './editable-context-menu'
-import type { CreateMainWindowOptions } from './main-window-contracts'
+import type { CreateMainWindowOptions, MainWindowLoadObserver } from './main-window-contracts'
 import { browserRouteWebContentsRegistry } from '../browser/browser-route-session-runtime'
 import {
   attachBrowserClientPageRenderer,
@@ -39,7 +39,7 @@ export function installMainWindowFocusLifecycle(args: {
   isWindowClosing: () => boolean
   mainWindow: BrowserWindow
   opts?: CreateMainWindowOptions
-  reloadMainWindow: (onError?: (error: Error) => void) => void
+  reloadMainWindow: (observer: MainWindowLoadObserver) => void
   rendererWebContentsId: number
 }): MainWindowFocusLifecycle {
   const { isWindowClosing, mainWindow, opts, reloadMainWindow, rendererWebContentsId } = args
@@ -200,16 +200,12 @@ export function installMainWindowFocusLifecycle(args: {
       const recovery = rendererRecoveryCircuitBreaker.registerRecoveryAttempt(Date.now())
       if (!recovery.allowed) {
         // Why: too many reloads means it will just crash again; stop and let the host surface a recovery prompt.
-        opts?.onRendererRecoveryExhausted?.({
-          details,
-          webContentsId: rendererWebContentsId,
-          recentRecoveryCount: recovery.recentRecoveryCount,
-          cause: 'crash-loop',
-          // Why watched: the prompt's manual retry is a recovery reload too, and an unwatched one that stalls
-          // leaves the user with a blank window and no further prompt.
-          retry: () =>
-            recoveryReloadWatchdog.issue(details, recovery.recentRecoveryCount, 'manual-retry')
-        })
+        // Why through the watchdog: it owns the one-prompt-at-a-time guard, and the prompt's manual retry is a
+        // recovery reload too — unwatched, one that stalls leaves a blank window and no further prompt.
+        recoveryReloadWatchdog.escalate(
+          { details, recentRecoveryCount: recovery.recentRecoveryCount },
+          'crash-loop'
+        )
         return
       }
       // Why: a transient renderer/Network Service loss can blank Chromium; reload the app document once to recover.
@@ -245,7 +241,7 @@ export function installMainWindowFocusLifecycle(args: {
     rendererProcessGone = false
     attachBrowserClientPageRenderer(rendererWebContents)
     clearRendererRecoveryTimer()
-    recoveryReloadWatchdog.settleLoaded()
+    recoveryReloadWatchdog.notifyDocumentLoaded()
   })
 
   const dispose = (): void => {

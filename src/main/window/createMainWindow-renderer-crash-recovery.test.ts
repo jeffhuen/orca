@@ -21,7 +21,7 @@ vi.mock('../browser/browser-client-page-renderer-runtime', async () => {
   }
 })
 
-import { createMainWindow, loadMainWindow } from './createMainWindow'
+import { createMainWindow } from './createMainWindow'
 import { ipcMain } from 'electron'
 import { shouldRecoverRendererAfterProcessGone } from '../crash-reporting/process-gone-classification'
 import {
@@ -623,8 +623,8 @@ describe('createMainWindow', () => {
     // 1 initial load + 3 recoveries; the 4th crash was refused.
     expect(browserWindowInstance.loadFile).toHaveBeenCalledTimes(4)
 
-    // The recovery prompt's Reload button goes straight to loadMainWindow, which the breaker never gates.
-    loadMainWindow(browserWindowInstance as unknown as Electron.BrowserWindow)
+    // The recovery prompt's Reload button takes the watched retry, which the breaker never gates.
+    onRendererRecoveryExhausted.mock.calls[0]?.[0].retry()
     expect(browserWindowInstance.loadFile).toHaveBeenCalledTimes(5)
 
     // Still-poisoned machine: the next crash re-raises the prompt immediately instead of re-arming auto-reloads.

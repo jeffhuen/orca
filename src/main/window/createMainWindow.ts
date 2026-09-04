@@ -14,7 +14,7 @@ import {
   installMainWindowCloseLifecycle,
   WINDOW_QUIT_RENDERER_ACK_TIMEOUT_MS
 } from './main-window-close-lifecycle'
-import type { CreateMainWindowOptions } from './main-window-contracts'
+import type { CreateMainWindowOptions, MainWindowLoadObserver } from './main-window-contracts'
 import { mainWindowLoadErrorCode } from './main-window-load-error-code'
 import { installMainWindowFocusLifecycle } from './main-window-focus-lifecycle'
 import { installMainWindowShortcutRouting } from './main-window-shortcut-routing'
@@ -34,26 +34,29 @@ import { installWindowsPathRegistryChangeListener } from '../pty/windows-path-re
 
 export { WINDOW_QUIT_RENDERER_ACK_TIMEOUT_MS }
 
-export function loadMainWindow(mainWindow: BrowserWindow, onError?: (error: Error) => void): void {
+export function loadMainWindow(mainWindow: BrowserWindow, observer?: MainWindowLoadObserver): void {
   const load =
     is.dev && process.env.ELECTRON_RENDERER_URL
       ? mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
       : mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   // Why: the discarded promise was the only report an ERR_FILE_NOT_FOUND/ERR_CONNECTION_REFUSED load ever made,
   // so a recovery reload that was rejected outright left a blank window and no signal anywhere.
-  load.catch((cause: unknown) => {
-    const error = cause instanceof Error ? cause : new Error(String(cause))
-    const errorCode = mainWindowLoadErrorCode(error)
-    // Why durable: catching the rejection retires the main_unhandled_rejection crumb this used to produce, and
-    // console output never reaches the diagnostic bundle — a packaged app discards stdout. Why not on teardown:
-    // a quit or close aborts the pending load (ERR_ABORTED, or a destroyed-object rejection that maps to
-    // 'unknown'), and a healthy shutdown must not write a load failure into the stream triage reads.
-    if (!mainWindow.isDestroyed() && errorCode !== 'ERR_ABORTED') {
-      recordDurableCrashBreadcrumb('main_window_load_failed', { errorCode })
+  load.then(
+    () => observer?.onLoaded?.(),
+    (cause: unknown) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause))
+      const errorCode = mainWindowLoadErrorCode(error)
+      // Why durable: catching the rejection retires the main_unhandled_rejection crumb this used to produce, and
+      // console output never reaches the diagnostic bundle — a packaged app discards stdout. Why not on teardown:
+      // a quit or close aborts the pending load (ERR_ABORTED, or a destroyed-object rejection that maps to
+      // 'unknown'), and a healthy shutdown must not write a load failure into the stream triage reads.
+      if (!mainWindow.isDestroyed() && errorCode !== 'ERR_ABORTED') {
+        recordDurableCrashBreadcrumb('main_window_load_failed', { errorCode })
+      }
+      console.error('[window] Main window load failed', error)
+      observer?.onError?.(error)
     }
-    console.error('[window] Main window load failed', error)
-    onError?.(error)
-  })
+  )
 }
 
 export function createMainWindow(
@@ -189,7 +192,7 @@ export function createMainWindow(
     isWindowClosing: state.isWindowClosing,
     mainWindow,
     opts,
-    reloadMainWindow: (onError) => loadMainWindow(mainWindow, onError),
+    reloadMainWindow: (observer) => loadMainWindow(mainWindow, observer),
     rendererWebContentsId
   })
   // Why registered here, not at definition: onSystemResume closes over `focus`, so an earlier listener would sit

@@ -1,8 +1,15 @@
 import type { KeybindingOverrides } from '../../shared/keybindings'
 import type {
+  RecoveryExhaustionCause,
   RecoveryReloadMilestone,
   RecoveryReloadTrigger
 } from './renderer-recovery-reload-watchdog'
+
+/** Per-load outcome from Electron's load promise, which is scoped to that one load unlike `did-finish-load`. */
+export type MainWindowLoadObserver = {
+  onLoaded?: () => void
+  onError?: (error: Error) => void
+}
 
 export type CreateMainWindowOptions = {
   /** Returns true when a manual app.quit() (Cmd+Q) is in progress, so the renderer skips the running-process confirm dialog. */
@@ -23,7 +30,7 @@ export type CreateMainWindowOptions = {
     details: Electron.RenderProcessGoneDetails
     webContentsId: number
     recentRecoveryCount: number
-    cause?: 'crash-loop' | 'reload-stalled'
+    cause?: RecoveryExhaustionCause
     /** Watched manual retry for the recovery prompt; an unwatched one cannot re-raise the prompt when it stalls too. */
     retry?: () => void
   }) => void
@@ -49,6 +56,8 @@ export type CreateMainWindowOptions = {
     progress?: RecoveryReloadMilestone
     /** True when the load landed after the recovery prompt was already raised — the recovery worked. */
     afterPrompt?: boolean
+    /** True when a later navigation replaced this load: elapsedMs then measures the replacement, not the reload. */
+    superseded?: boolean
     /** `ERR_*` code only, for the same reason — Electron's load-error message embeds the URL. */
     errorCode?: string
   }) => void

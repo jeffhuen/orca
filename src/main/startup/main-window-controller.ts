@@ -148,12 +148,21 @@ export function openMainWindow(options: { revealOnDidFinishLoad?: boolean } = {}
     },
     // Why: renderer_recovery_reload records intent before the load is issued, so a bundle could not distinguish a
     // reload that landed from one that never produced a document. This is the paired outcome.
-    onRecoveryReloadOutcome: ({ status, attempt, elapsedMs, progress, afterPrompt, errorCode }) => {
+    onRecoveryReloadOutcome: ({
+      status,
+      attempt,
+      elapsedMs,
+      progress,
+      afterPrompt,
+      superseded,
+      errorCode
+    }) => {
       recordDurableCrashBreadcrumb(`renderer_recovery_reload_${status}`, {
         attempt,
         elapsedMs,
         ...(progress ? { progress } : {}),
         ...(afterPrompt ? { afterPrompt } : {}),
+        ...(superseded ? { superseded } : {}),
         ...(errorCode ? { errorCode } : {})
       })
     }
