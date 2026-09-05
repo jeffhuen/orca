@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import * as localPtyUtils from '../providers/local-pty-utils'
 import {
   createMockSubprocess,
@@ -62,10 +62,12 @@ describe('DaemonPtyAdapter startup delivery', () => {
     }
   })
 
-  itOnPosix.each(['environment', 'override'] as const)(
+  itOnPosix.for(['environment', 'override'] as const)(
     'waits for the fallback shell when the %s shell is missing',
-    async (source) => {
+    async (source, context) => {
       const missingShell = join(dir, 'missing-fish')
+      const fallbackName = basename(localPtyUtils.resolveUnixShellPath(missingShell))
+      context.skip(!['bash', 'zsh'].includes(fallbackName), 'Requires a Bash/zsh fallback')
       await adapter.spawn({
         cols: 80,
         rows: 24,
