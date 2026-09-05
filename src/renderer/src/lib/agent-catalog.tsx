@@ -309,7 +309,7 @@ export const getAgentCatalog = createLocalizedCatalog((): AgentCatalogEntry[] =>
   },
   {
     id: 'muse',
-    label: translate('auto.lib.agent.catalog.0fda695f70', 'Muse'),
+    label: translate('auto.lib.agent.catalog.muse_label', 'Muse'),
     cmd: 'muse',
     faviconDomain: 'dev.meta.ai',
     homepageUrl: 'https://dev.meta.ai/docs/muse-code'
